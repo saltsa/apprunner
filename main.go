@@ -71,6 +71,7 @@ type currentRun struct {
 	cmd            *exec.Cmd
 	runInitialized time.Time
 	appName        string
+	running        bool
 }
 
 func (cr *currentRun) SetRunning(dc *DeployConfig) {
@@ -122,6 +123,7 @@ func NewCurrentRun(appName string, dc *DeployConfig) *currentRun {
 	log.Printf("start app `%s`", appName)
 	run, ok := runs[appName]
 	if ok {
+		run.SetRunning(dc)
 		return run
 	}
 	c := &currentRun{}

@@ -25,6 +25,12 @@ func printOutput(cr *currentRun, rc io.ReadCloser) {
 // clean this
 func runApp(cr *currentRun) {
 
+	cr.Lock()
+	if cr.running {
+		return
+	}
+	cr.running = true
+	cr.Unlock()
 	healthCheck := time.Tick(cmdHealthCheckInterval)
 	for {
 		select {
