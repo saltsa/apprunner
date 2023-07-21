@@ -48,6 +48,7 @@ type DeployConfig struct {
 	Source       string
 	Env          []string
 	AppName      string
+	Signatures   []string
 	lastModified time.Time
 }
 
@@ -60,6 +61,7 @@ func (dc *DeployConfig) Verify() error {
 		validation.VerifySHA256Sum(dc.SHA256Sum),
 		validation.VerifySource(dc.Source, cfg.GithubUser),
 		validation.VerifyVersion(dc.Version),
+		validation.VerifySignature(dc.SHA256Sum, dc.Signatures),
 	)
 }
 
@@ -236,6 +238,7 @@ func downloadApp(dc *DeployConfig) (string, error) {
 		return "", err
 	}
 
+	// verify downloaded matches the sha256sum
 	sumArray := sha256.Sum256(body)
 	downloadedSum := fmt.Sprintf("%x", sumArray)
 	if downloadedSum != expectHash {
@@ -244,8 +247,8 @@ func downloadApp(dc *DeployConfig) (string, error) {
 
 	log.Printf("application downloaded and verified successfully")
 
+	// write app to temp dir
 	tmpdir := filepath.Join(os.TempDir(), "apprunner")
-
 	err = os.MkdirAll(tmpdir, 0700)
 	if err != nil {
 		return "", err
@@ -287,6 +290,11 @@ func main() {
 	log.SetFlags(log.Lmicroseconds)
 	cfg = getConfig()
 	log.Printf("cfg: %+v", cfg)
+
+	err := validation.UpdateValidKeys(cfg.GithubUser)
+	if err != nil {
+		log.Fatalf("error updating keys from github: %s", err)
+	}
 
 	go func() {
 		for {
