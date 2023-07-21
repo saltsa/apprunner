@@ -255,6 +255,14 @@ func downloadApp(dc *DeployConfig) (string, error) {
 		return "", err
 	}
 
+	err = errors.Join(
+		f.Sync(),
+		f.Close(),
+	)
+	if err != nil {
+		return "", err
+	}
+
 	log.Printf("new version downloaded to: %s", f.Name())
 
 	return f.Name(), nil
