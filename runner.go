@@ -89,15 +89,14 @@ func runApp(cr *currentRun) {
 
 			cr.RLock()
 			if cr.cmd != nil && cr.cmd.ProcessState != nil {
-					if ps.Exited() {
-						select {
-						case cr.reload <- struct{}{}:
-						default:
-						}
+				if cr.cmd.ProcessState.Exited() {
+					select {
+					case cr.reload <- struct{}{}:
+					default:
 					}
 				}
 			}
-			cr.RUnlock()
 		}
+		cr.RUnlock()
 	}
 }
