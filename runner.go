@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -27,6 +29,7 @@ func runApp(cr *currentRun) {
 
 	cr.Lock()
 	if cr.running {
+		cr.Unlock()
 		return
 	}
 	cr.running = true
@@ -37,60 +40,60 @@ func runApp(cr *currentRun) {
 		case <-cr.reload:
 			log.Printf("reload requested")
 
+			// makes sure the current process is stopped
 			cr.Stop()
 
-			go func() {
+			cr.Lock()
 
-				c := exec.Command(cr.Location)
-				cr.Lock()
-				cr.cmd = c
-				cr.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			c := exec.CommandContext(ctx, cr.Location)
 
-				c.WaitDelay = 5 * time.Second
-				c.Env = append(os.Environ(), cr.Env...)
-				errPipe, err := c.StderrPipe()
-				if err != nil {
-					log.Printf("pipefailure: %s", err)
-					return
-				}
-				stdoutPipe, err := c.StdoutPipe()
-				if err != nil {
-					log.Printf("pipefailure: %s", err)
-					return
-				}
-				printOutput(cr, errPipe)
-				printOutput(cr, stdoutPipe)
+			cr.cmd = c
+			cr.ctx = ctx
+			cr.cancelFunc = cancel
 
-				log.Printf("running application...")
-				err = c.Start()
-				if err == nil {
-					log.Printf("app started")
-				} else {
-					log.Printf("app startup failure: %s", err)
-					return
-				}
+			c.WaitDelay = 5 * time.Second
+			c.Cancel = func() error {
+				log.Println("sending sigterm to process...")
+				c.Process.Signal(syscall.SIGTERM)
+				return nil
+			}
 
-				// release cmd resources
-				err = c.Wait()
-				if err != nil {
-					log.Printf("wait failure: %s", err)
-				}
-				log.Printf("app wait success")
-			}()
+			c.Env = append(os.Environ(), cr.Env...)
+
+			errPipe, err := c.StderrPipe()
+			if err != nil {
+				log.Fatalf("pipefailure: %s", err)
+			}
+			stdoutPipe, err := c.StdoutPipe()
+			if err != nil {
+				log.Fatalf("pipefailure: %s", err)
+			}
+			printOutput(cr, errPipe)
+			printOutput(cr, stdoutPipe)
+
+			log.Printf("running application...")
+
+			// this is non-blocking
+			err = c.Start()
+			if err == nil {
+				log.Printf("app started successfully, pid=%d", c.Process.Pid)
+			} else {
+				log.Printf("app startup failure: %s", err)
+			}
+
+			cr.Unlock()
 
 		case <-healthCheck:
-			cr.RLock()
-			log.Printf("health checking...")
+			log.Printf("healthchecking...")
 
-			if cr.cmd != nil {
-				ps := cr.cmd.ProcessState
-				if ps != nil && !ps.Exited() {
-					log.Printf("process still running")
-				} else {
-					log.Printf("process completed")
-					select {
-					case cr.reload <- struct{}{}:
-					default:
+			cr.RLock()
+			if cr.cmd != nil && cr.cmd.ProcessState != nil {
+					if ps.Exited() {
+						select {
+						case cr.reload <- struct{}{}:
+						default:
+						}
 					}
 				}
 			}

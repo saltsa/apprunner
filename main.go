@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -68,24 +69,33 @@ type currentRun struct {
 	Location       string
 	Env            []string
 	reload         chan struct{}
-	cmd            *exec.Cmd
 	runInitialized time.Time
 	appName        string
 	running        bool
+	cmd            *exec.Cmd
+	ctx            context.Context
+	cancelFunc     context.CancelFunc
+}
+
+func (cr *currentRun) String() string {
+	return fmt.Sprintf("<%s %s started at %s>", cr.appName, cr.Version, cr.runInitialized.Format("15:04:05"))
 }
 
 func (cr *currentRun) SetRunning(dc *DeployConfig) {
 	cr.Lock()
 	defer cr.Unlock()
+	currentVer := cr.Version
+	currentInit := cr.runInitialized
 
 	// TODO: Visit this. For debugging purposes it's useful to consider last modified, otherwise only version
-	if cr.Version != dc.Version || (!dc.lastModified.IsZero() && dc.lastModified.After(cr.runInitialized)) {
+	if currentVer != dc.Version || (!dc.lastModified.IsZero() && dc.lastModified.After(currentInit)) {
 		log.Printf("deploying a new version: %s", dc.Version)
 		location, err := downloadApp(dc)
 		if err != nil {
 			log.Printf("failure to deploy app: %s", err)
 			return
 		}
+
 		cr.Version = dc.Version
 		cr.Location = location
 		cr.Env = dc.Env
@@ -101,28 +111,29 @@ func (cr *currentRun) SetRunning(dc *DeployConfig) {
 }
 
 func (cr *currentRun) Stop() {
-	log.Printf("stopping run %#v", cr)
 
 	cr.Lock()
 	defer cr.Unlock()
 
-	if cr.cmd != nil {
-		if cr.cmd.Process != nil {
-			log.Printf("send kill signal")
-			err := cr.cmd.Process.Kill()
-			if err != nil {
-				log.Printf("kill returned error: %s", err)
-			}
-		}
-		log.Printf("wait to finish")
-		err := cr.cmd.Wait()
-		if err != nil {
-			log.Printf("wait returned error: %s", err)
-		}
-
-		cr.cmd = nil
+	if cr.cmd == nil || cr.cmd.Process == nil {
+		return
 	}
-	log.Printf("stopped run %#v", cr)
+	log.Printf("stopping process %s", cr)
+
+	log.Printf("wait cmd to finish...")
+	cr.cmd.Process.Signal(syscall.SIGTERM)
+	err := cr.cmd.Wait()
+	if err != nil {
+		log.Printf("wait returned error: %s", err)
+	}
+
+	cr.cancelFunc()
+
+	log.Printf("process final state: %s", cr.cmd.ProcessState)
+
+	cr.cmd = nil
+
+	log.Printf("stopped run %s", cr)
 }
 
 func NewCurrentRun(appName string) *currentRun {
@@ -288,7 +299,6 @@ func main() {
 
 			// CleanRuns()
 			for app, dc := range resp.Apps {
-				log.Printf("get config run for app %s", app)
 				cr := NewCurrentRun(app)
 				cr.SetRunning(dc)
 				go runApp(cr)
