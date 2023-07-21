@@ -1,11 +1,26 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"time"
 )
+
+func printOutput(cr *currentRun, rc io.ReadCloser) {
+	go func() {
+		scanner := bufio.NewScanner(rc)
+		for scanner.Scan() {
+			row := scanner.Text()
+			fmt.Fprintf(os.Stdout, "%-17s | %s\n", cr.appName, row)
+		}
+
+		rc.Close()
+	}()
+}
 
 // clean this
 func runApp(cr *currentRun) {
@@ -29,17 +44,28 @@ func runApp(cr *currentRun) {
 
 			go func() {
 
-				cr.Lock()
 				c := exec.Command(cr.Location)
-				c.Stderr = os.Stderr
-				c.Stdout = os.Stdout
-				c.WaitDelay = 5 * time.Second
-				c.Env = append(os.Environ(), cr.Env...)
+				cr.Lock()
 				cr.cmd = c
 				cr.Unlock()
 
+				c.WaitDelay = 5 * time.Second
+				c.Env = append(os.Environ(), cr.Env...)
+				errPipe, err := c.StderrPipe()
+				if err != nil {
+					log.Printf("pipefailure: %s", err)
+					return
+				}
+				stdoutPipe, err := c.StdoutPipe()
+				if err != nil {
+					log.Printf("pipefailure: %s", err)
+					return
+				}
+				printOutput(cr, errPipe)
+				printOutput(cr, stdoutPipe)
+
 				log.Printf("running application...")
-				err := c.Run()
+				err = c.Start()
 				if err == nil {
 					log.Printf("app started")
 				} else {
@@ -52,6 +78,7 @@ func runApp(cr *currentRun) {
 				if err != nil {
 					log.Printf("wait failure: %s", err)
 				}
+				log.Printf("app wait success")
 
 				// and then make it nil to allow new start
 				cr.Lock()

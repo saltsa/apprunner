@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/saltsa/apprunner/validation"
 	"github.com/spf13/viper"
 )
 
@@ -23,20 +25,40 @@ var (
 	cmdHealthCheckInterval = 10 * time.Second
 )
 
-type Config struct {
-	ConfigURL string `mapstructure:"config_url"`
+var cfg *Config
+var runs = make(map[string]*currentRun)
+
+var client = &http.Client{
+	Timeout: 30 * time.Second,
 }
 
+type Config struct {
+	ConfigURL  string `mapstructure:"config_url"`
+	GithubUser string `mapstructure:"github_user"`
+}
+
+type ConfigResponse struct {
+	Apps map[string]*DeployConfig
+}
 type DeployConfig struct {
 	SHA256Sum    string
 	Version      string
 	Source       string
 	Env          []string
+	AppName      string
 	lastModified time.Time
 }
 
 func (dc *DeployConfig) String() string {
 	return fmt.Sprintf("app version %s from %s", dc.Version, dc.Source)
+}
+
+func (dc *DeployConfig) Verify() error {
+	return errors.Join(
+		validation.VerifySHA256Sum(dc.SHA256Sum),
+		validation.VerifySource(dc.Source, cfg.GithubUser),
+		validation.VerifyVersion(dc.Version),
+	)
 }
 
 type currentRun struct {
@@ -47,12 +69,14 @@ type currentRun struct {
 	reload         chan struct{}
 	cmd            *exec.Cmd
 	runInitialized time.Time
+	appName        string
 }
 
 func (cr *currentRun) SetRunning(dc *DeployConfig) {
 	cr.Lock()
 	defer cr.Unlock()
 
+	// TODO: Visit this. For debugging purposes it's useful to consider last modified, otherwise only version
 	if cr.Version != dc.Version || (!dc.lastModified.IsZero() && dc.lastModified.After(cr.runInitialized)) {
 		log.Printf("deploying a new version: %s", dc.Version)
 		location, err := downloadApp(dc)
@@ -63,6 +87,7 @@ func (cr *currentRun) SetRunning(dc *DeployConfig) {
 		cr.Version = dc.Version
 		cr.Location = location
 		cr.Env = dc.Env
+		cr.appName = dc.AppName
 		cr.runInitialized = time.Now()
 		select {
 		case cr.reload <- struct{}{}:
@@ -73,14 +98,44 @@ func (cr *currentRun) SetRunning(dc *DeployConfig) {
 	}
 }
 
-func NewCurrentRun() *currentRun {
-	c := currentRun{}
-	c.reload = make(chan struct{}, 1)
-	return &c
+func (cr *currentRun) Stop() {
+	cr.Lock()
+	defer cr.Unlock()
+	log.Printf("stopping run %#v", cr)
+
+	if cr.cmd != nil {
+		if cr.cmd.Process != nil {
+			err := cr.cmd.Process.Kill()
+			if err != nil {
+				log.Printf("kill returned error: %s", err)
+			}
+		}
+		err := cr.cmd.Wait()
+		if err != nil {
+			log.Printf("wait returned error: %s", err)
+		}
+	}
 }
 
-var client = &http.Client{
-	Timeout: 30 * time.Second,
+func NewCurrentRun(appName string, dc *DeployConfig) *currentRun {
+	log.Printf("start app `%s`", appName)
+	run, ok := runs[appName]
+	if ok {
+		return run
+	}
+	c := &currentRun{}
+	runs[appName] = c
+
+	c.reload = make(chan struct{}, 1)
+	c.SetRunning(dc)
+
+	return c
+}
+
+func CleanRuns() {
+	for _, run := range runs {
+		run.Stop()
+	}
 }
 
 func getConfig() *Config {
@@ -106,10 +161,9 @@ func getConfig() *Config {
 	return &cfg
 }
 
-func getDeployConfig(cfg *Config) (*DeployConfig, error) {
+func getDeployConfig(cfg *Config) (*ConfigResponse, error) {
 	resp, err := client.Get(cfg.ConfigURL)
 	if err != nil {
-		log.Printf("failure to get config: %s", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
@@ -118,24 +172,31 @@ func getDeployConfig(cfg *Config) (*DeployConfig, error) {
 	}
 	dec := json.NewDecoder(resp.Body)
 
-	dc := &DeployConfig{}
+	apps := &ConfigResponse{}
 
-	err = dec.Decode(dc)
+	err = dec.Decode(apps)
 	if err != nil {
-		log.Printf("failure to get config: %s", err)
 		return nil, err
 	}
 
-	log.Printf("got deploy config: %s", dc)
+	log.Printf("got deploy config: %s", apps)
 
 	lm := resp.Header.Get("last-modified")
 	lastModified, err := time.Parse(time.RFC1123, lm)
 	if err != nil {
 		log.Printf("could not get last modified: %s", err)
-	} else {
-		dc.lastModified = lastModified
 	}
-	return dc, nil
+
+	for _, dc := range apps.Apps {
+		dc.lastModified = lastModified
+
+		err := dc.Verify()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return apps, nil
 }
 
 func downloadApp(dc *DeployConfig) (string, error) {
@@ -194,25 +255,27 @@ func downloadApp(dc *DeployConfig) (string, error) {
 
 func main() {
 	log.SetFlags(log.Lmicroseconds)
-	cfg := getConfig()
+	cfg = getConfig()
 	log.Printf("cfg: %+v", cfg)
-
-	cr := NewCurrentRun()
 
 	go func() {
 		for {
-			dc, err := getDeployConfig(cfg)
+			resp, err := getDeployConfig(cfg)
 			if err != nil {
 				log.Printf("failure to fetch deploy config: %s", err)
 				time.Sleep(configReloadInterval)
 				continue
 			}
-			cr.SetRunning(dc)
+
+			// CleanRuns()
+			for app, dc := range resp.Apps {
+				log.Printf("get config run for app %s", app)
+				cr := NewCurrentRun(app, dc)
+				go runApp(cr)
+			}
 			time.Sleep(configReloadInterval)
 		}
 	}()
-
-	go runApp(cr)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
