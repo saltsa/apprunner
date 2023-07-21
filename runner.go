@@ -37,16 +37,7 @@ func runApp(cr *currentRun) {
 		case <-cr.reload:
 			log.Printf("reload requested")
 
-			cr.RLock()
-			if cr.cmd != nil {
-				log.Printf("killing the current app...")
-				err := cr.cmd.Process.Kill()
-				log.Printf("cmd cancel: %v", err)
-				err = cr.cmd.Wait()
-				log.Printf("app killed, resources freed, err=%s", err)
-				cr.cmd = nil
-			}
-			cr.RUnlock()
+			cr.Stop()
 
 			go func() {
 
@@ -85,11 +76,6 @@ func runApp(cr *currentRun) {
 					log.Printf("wait failure: %s", err)
 				}
 				log.Printf("app wait success")
-
-				// and then make it nil to allow new start
-				cr.Lock()
-				cr.cmd = nil
-				cr.Unlock()
 			}()
 
 		case <-healthCheck:

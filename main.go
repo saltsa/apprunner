@@ -101,36 +101,40 @@ func (cr *currentRun) SetRunning(dc *DeployConfig) {
 }
 
 func (cr *currentRun) Stop() {
+	log.Printf("stopping run %#v", cr)
+
 	cr.Lock()
 	defer cr.Unlock()
-	log.Printf("stopping run %#v", cr)
 
 	if cr.cmd != nil {
 		if cr.cmd.Process != nil {
+			log.Printf("send kill signal")
 			err := cr.cmd.Process.Kill()
 			if err != nil {
 				log.Printf("kill returned error: %s", err)
 			}
 		}
+		log.Printf("wait to finish")
 		err := cr.cmd.Wait()
 		if err != nil {
 			log.Printf("wait returned error: %s", err)
 		}
+
+		cr.cmd = nil
 	}
+	log.Printf("stopped run %#v", cr)
 }
 
-func NewCurrentRun(appName string, dc *DeployConfig) *currentRun {
-	log.Printf("start app `%s`", appName)
+func NewCurrentRun(appName string) *currentRun {
 	run, ok := runs[appName]
 	if ok {
-		run.SetRunning(dc)
 		return run
 	}
+	log.Printf("create new run for app `%s`", appName)
+
 	c := &currentRun{}
 	runs[appName] = c
-
 	c.reload = make(chan struct{}, 1)
-	c.SetRunning(dc)
 
 	return c
 }
@@ -285,7 +289,8 @@ func main() {
 			// CleanRuns()
 			for app, dc := range resp.Apps {
 				log.Printf("get config run for app %s", app)
-				cr := NewCurrentRun(app, dc)
+				cr := NewCurrentRun(app)
+				cr.SetRunning(dc)
 				go runApp(cr)
 			}
 			time.Sleep(configReloadInterval)
