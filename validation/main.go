@@ -65,6 +65,7 @@ func VerifySignature(messageStr string, signatureStrList []string) error {
 	message := []byte(messageStr)
 
 	mutex.Lock()
+	defer mutex.Unlock()
 
 	for _, signatureStr := range signatureStrList {
 		signature, err := base64.RawURLEncoding.DecodeString(signatureStr)
@@ -78,7 +79,6 @@ func VerifySignature(messageStr string, signatureStrList []string) error {
 			}
 		}
 	}
-	mutex.Unlock()
 	return errors.New("signature verification failed")
 }
 
