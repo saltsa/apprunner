@@ -96,7 +96,7 @@ func runApp(cr *currentRun) {
 					}
 				}
 			}
+			cr.RUnlock()
 		}
-		cr.RUnlock()
 	}
 }
