@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -233,7 +234,11 @@ func downloadApp(dc *DeployConfig) (string, error) {
 		return "", err
 	}
 
-	f, err := os.CreateTemp(tmpdir, "app")
+	pattern := "app*"
+	if runtime.GOOS == "windows" {
+		pattern = "app*.exe"
+	}
+	f, err := os.CreateTemp(tmpdir, pattern)
 	if err != nil {
 		return "", err
 	}

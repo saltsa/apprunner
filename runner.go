@@ -92,14 +92,14 @@ func runApp(cr *currentRun) {
 
 			if cr.cmd != nil {
 				ps := cr.cmd.ProcessState
-				if ps != nil && ps.Exited() {
+				if ps != nil && !ps.Exited() {
+					log.Printf("process still running")
+				} else {
 					log.Printf("process completed")
 					select {
 					case cr.reload <- struct{}{}:
 					default:
 					}
-				} else {
-					log.Printf("process still running")
 				}
 			}
 			cr.RUnlock()
