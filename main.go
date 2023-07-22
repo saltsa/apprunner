@@ -1,4 +1,4 @@
-package main
+package apprunner
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -23,8 +22,8 @@ import (
 )
 
 var (
-	configReloadInterval   = 15 * time.Second
-	cmdHealthCheckInterval = 10 * time.Second
+	ConfigReloadInterval   = 15 * time.Second
+	CmdHealthCheckInterval = 10 * time.Second
 )
 
 var cfg *Config
@@ -49,6 +48,8 @@ type DeployConfig struct {
 	Env          []string
 	AppName      string
 	Signatures   []string
+	Goarch       string
+	Goos         string
 	lastModified time.Time
 }
 
@@ -138,7 +139,15 @@ func (cr *currentRun) Stop() {
 	log.Printf("stopped run %s", cr)
 }
 
-func NewCurrentRun(appName string) *currentRun {
+func NewCurrentRun(appName string, dc *DeployConfig) *currentRun {
+	if dc.Goarch != runtime.GOARCH {
+		log.Printf("skipping invalid arch: %s", dc.Goarch)
+		return nil
+	}
+	if dc.Goos != runtime.GOOS {
+		log.Printf("skipping invalid goos: %s", dc.Goos)
+		return nil
+	}
 	run, ok := runs[appName]
 	if ok {
 		return run
@@ -158,10 +167,10 @@ func CleanRuns() {
 	}
 }
 
-func getConfig() *Config {
+func GetConfig() *Config {
 	viper.AddConfigPath(".")
 	viper.SetConfigName("app")
-	viper.SetConfigType("env")
+	// viper.SetConfigType("env")
 
 	viper.AutomaticEnv()
 	err := viper.ReadInConfig()
@@ -181,7 +190,7 @@ func getConfig() *Config {
 	return &cfg
 }
 
-func getDeployConfig(cfg *Config) (*ConfigResponse, error) {
+func GetDeployConfig() (*ConfigResponse, error) {
 	resp, err := client.Get(cfg.ConfigURL)
 	if err != nil {
 		return nil, err
@@ -286,49 +295,13 @@ func downloadApp(dc *DeployConfig) (string, error) {
 	return f.Name(), nil
 }
 
-func main() {
+func init() {
 	log.SetFlags(log.Lmicroseconds)
-	cfg = getConfig()
+	cfg = GetConfig()
 	log.Printf("cfg: %+v", cfg)
 
 	err := validation.UpdateValidKeys(cfg.GithubUser)
 	if err != nil {
 		log.Fatalf("error updating keys from github: %s", err)
-	}
-
-	go func() {
-		for {
-			resp, err := getDeployConfig(cfg)
-			if err != nil {
-				log.Printf("failure to fetch deploy config: %s", err)
-				time.Sleep(configReloadInterval)
-				continue
-			}
-
-			// CleanRuns()
-			for app, dc := range resp.Apps {
-				cr := NewCurrentRun(app)
-				cr.SetRunning(dc)
-				go runApp(cr)
-			}
-			time.Sleep(configReloadInterval)
-		}
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-
-	for {
-		recv := <-quit
-		if recv == os.Interrupt {
-			os.Stdout.Write([]byte("\r"))
-		}
-
-		log.Printf("got signal: %v", recv)
-
-		if recv == os.Interrupt || recv == syscall.SIGTERM {
-			log.Println("quitting")
-			return
-		}
 	}
 }

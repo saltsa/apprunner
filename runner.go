@@ -1,4 +1,4 @@
-package main
+package apprunner
 
 import (
 	"bufio"
@@ -25,7 +25,7 @@ func printOutput(cr *currentRun, rc io.ReadCloser) {
 }
 
 // clean this
-func runApp(cr *currentRun) {
+func RunApp(cr *currentRun) {
 
 	cr.Lock()
 	if cr.running {
@@ -34,7 +34,7 @@ func runApp(cr *currentRun) {
 	}
 	cr.running = true
 	cr.Unlock()
-	healthCheck := time.Tick(cmdHealthCheckInterval)
+	healthCheck := time.Tick(CmdHealthCheckInterval)
 	for {
 		select {
 		case <-cr.reload:
